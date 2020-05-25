@@ -126,10 +126,10 @@ class EmptyLayer(nn.Module):
 #
 #         self.img_stride = self.img_dim / self.grid_size
 #         # Calculate offsets for each grid
-#         self.grid_x = torch.arange(g, dtype=torch.double).repeat(g, 1).view([1, 1, g, g]).to(device=self.device)
-#         self.grid_y = torch.arange(g, dtype=torch.double).repeat(g, 1).t().view([1, 1, g, g]).to(device=self.device)
+#         self.grid_x = torch.arange(g, dtype=torch.float).repeat(g, 1).view([1, 1, g, g]).to(device=self.device)
+#         self.grid_y = torch.arange(g, dtype=torch.float).repeat(g, 1).t().view([1, 1, g, g]).to(device=self.device)
 #         self.scaled_anchors = torch.tensor([(a_w / self.img_stride, a_h / self.img_stride) for a_w, a_h in self.anchors],
-#                                       dtype=torch.double).to(device=self.device)
+#                                       dtype=torch.float).to(device=self.device)
 #         self.anchor_w = self.scaled_anchors[:, 0:1].view((1, self.num_anchors, 1, 1))
 #         self.anchor_h = self.scaled_anchors[:, 1:2].view((1, self.num_anchors, 1, 1))
 #
@@ -182,10 +182,11 @@ class EmptyLayer(nn.Module):
 #                 pred_cls=pred_cls,
 #                 target=targets,
 #                 anchors=self.scaled_anchors,
-#                 ignore_thr=self.ignore_thres,
-#                 device=self.device
+#                 ignore_thr=self.ignore_thres
 #             )
 #
+#             obj_mask = obj_mask.long()
+#             no_obj_mask = noobj_mask.long()
 #             # Loss : Mask outputs to ignore non-existing objects (except with conf. loss)
 #             loss_x = self.mse_loss(x[obj_mask], tx[obj_mask])
 #             loss_y = self.mse_loss(y[obj_mask], ty[obj_mask])
@@ -255,8 +256,8 @@ class YOLOLayer(nn.Module):
 
         self.img_stride = self.img_dim / self.grid_size
         # Calculate offsets for each grid
-        self.grid_x = torch.arange(g, dtype=torch.float).repeat(g, 1).view([1, 1, g, g]).to(device=self.device)
-        self.grid_y = torch.arange(g, dtype=torch.float).repeat(g, 1).t().view([1, 1, g, g]).to(device=self.device)
+        self.grid_x = torch.arange(g, dtype=torch.float, device=self.device).repeat(g, 1).view([1, 1, g, g])
+        self.grid_y = torch.arange(g, dtype=torch.float, device=self.device).repeat(g, 1).t().view([1, 1, g, g])
         self.scaled_anchors = torch.tensor([(a_w / self.img_stride, a_h / self.img_stride) for a_w, a_h in self.anchors],
                                       dtype=torch.float).to(device=self.device)
         self.anchor_w = self.scaled_anchors[:, 0:1].view((1, self.num_anchors, 1, 1))
@@ -289,7 +290,7 @@ class YOLOLayer(nn.Module):
             self.compute_grid_offsets(grid_size)
 
         # Add offset and scale with anchors
-        pred_boxes = pred_boxes = torch.zeros_like(prediction[..., :4], dtype=torch.float)
+        pred_boxes = pred_boxes = torch.zeros_like(prediction[..., :4], dtype=torch.float, device=self.device)
         pred_boxes[..., 0] = x.data + self.grid_x
         pred_boxes[..., 1] = y.data + self.grid_y
         pred_boxes[..., 2] = torch.exp(w.data) * self.anchor_w
@@ -308,27 +309,38 @@ class YOLOLayer(nn.Module):
             return output, 0
         else:
             (iou_scores, class_mask, obj_mask, no_obj_mask,
-                trans_gth_x, trans_gth_y, trans_gth_w, trans_gth_h, trans_gth_cls, tconf) = build_targets(
+                true_x, true_y, true_w, true_h, true_cls, true_conf) = build_targets(
                 pred_boxes=pred_boxes,
                 pred_cls=pred_cls,
                 target=targets,
                 anchors=self.scaled_anchors,
-                ignore_thr=self.ignore_thr,
-                device=self.device
+                ignore_thr=self.ignore_thr
             )
+            print(x.size())
+            print(pred_cls.size())
+            print(true_cls.size())
+            print(pred_conf.size())
+            print(true_conf.size())
             obj_mask = obj_mask.long()
             no_obj_mask = no_obj_mask.long()
             # Loss : Mask outputs to ignore non-existing objects (except with conf. loss)
-            loss_x = self.mse_loss(x[obj_mask], trans_gth_x[obj_mask])
-            loss_y = self.mse_loss(y[obj_mask], trans_gth_y[obj_mask])
-            loss_w = self.mse_loss(w[obj_mask], trans_gth_w[obj_mask])
-            loss_h = self.mse_loss(h[obj_mask], trans_gth_h[obj_mask])
-            loss_conf_obj = self.bce_loss(pred_conf[obj_mask], tconf[obj_mask])
-            loss_conf_no_obj = self.bce_loss(pred_conf[no_obj_mask], tconf[no_obj_mask])
+            loss_x = self.mse_loss(x[obj_mask], true_x[obj_mask])
+            print("x", loss_x.detach().cpu().item())
+            loss_y = self.mse_loss(y[obj_mask], true_y[obj_mask])
+            print("y", loss_y.detach().cpu().item())
+            loss_w = self.mse_loss(w[obj_mask], true_w[obj_mask])
+            print("w", loss_w.detach().cpu().item())
+            loss_h = self.mse_loss(h[obj_mask], true_h[obj_mask])
+            print("h", loss_h.detach().cpu().item())
+            loss_conf_obj = self.bce_loss(pred_conf[obj_mask], true_conf[obj_mask])
+            print("obj", loss_conf_obj.detach().cpu().item())
+            loss_conf_no_obj = self.bce_loss(pred_conf[no_obj_mask], true_conf[no_obj_mask])
+            print("no_obj", loss_conf_no_obj.detach().cpu().item())
             loss_conf = self.obj_scale * loss_conf_obj + self.no_obj_scale * loss_conf_no_obj
-            loss_cls = self.bce_loss(pred_cls[obj_mask], trans_gth_cls[obj_mask])
+            loss_cls = self.bce_loss(pred_cls[obj_mask], true_cls[obj_mask])
+            print("loss_cls", loss_cls.detach().cpu().item())
             total_loss = loss_x + loss_y + loss_w + loss_h + loss_conf + loss_cls
-
+            print(total_loss.detach().cpu().item())
             # Metrics
             cls_acc = 100 * class_mask[obj_mask].mean()
             conf_obj = pred_conf[obj_mask].mean()
@@ -336,7 +348,7 @@ class YOLOLayer(nn.Module):
             conf50 = (pred_conf > 0.5).float()
             iou50 = (iou_scores > 0.5).float()
             iou75 = (iou_scores > 0.75).float()
-            detected_mask = conf50 * class_mask * tconf
+            detected_mask = conf50 * class_mask * true_conf
             precision = torch.sum(iou50 * detected_mask) / (conf50.sum() + 1e-16)
             recall50 = torch.sum(iou50 * detected_mask) / (obj_mask.sum() + 1e-16)
             recall75 = torch.sum(iou75 * detected_mask) / (obj_mask.sum() + 1e-16)
@@ -344,7 +356,7 @@ class YOLOLayer(nn.Module):
             self.metrics = {
                 "loss": total_loss.detach().cpu().item(),
                 "x": loss_x.detach().cpu().item(),
-                "y": loss_y.detach().item(),
+                "y": loss_y.detach().cpu().item(),
                 "w": loss_w.detach().cpu().item(),
                 "h": loss_h.detach().cpu().item(),
                 "conf": loss_conf.detach().cpu().item(),
